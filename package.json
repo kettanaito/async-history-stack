@@ -25,6 +25,7 @@
     "stack"
   ],
   "author": "Artem Zakharchenko <kettanaito@gmail.com>",
+  "license": "MIT",
   "repository": {
     "url": "https://github.com/kettanaito/ahsl"
   },
