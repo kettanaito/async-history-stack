@@ -1,6 +1,4 @@
-# ahsl
-
-Arbitrary History Stack Library.
+# Async History Stack
 
 ## Motivation
 
@@ -13,14 +11,14 @@ That's only scratching the architectural surface. There are a ton of practical a
 ## Getting started
 
 ```sh
-npm i ahsl
+npm i async-history-stack
 ```
 
 This library works by introducing a singleton that tracks the change history and allows its traversal.
 
 ```ts
 // src/history.ts
-import { HistoryStack } from 'ahsl'
+import { HistoryStack } from 'async-history-stack'
 
 export const historyStack = new HistoryStack({
   limit: 100
