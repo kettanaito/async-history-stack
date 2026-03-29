@@ -7,12 +7,10 @@ export interface HistoryStackInit {
   limit: number
 
   /**
-   * Duration of the batch window (ms).
-   * Any entry pushes within that window will be batched
-   * into a single history entry.
+   * Automatically merge history entries pushed within the given window (ms).
    * @default 0
    */
-  batchWindow?: number
+  autoMergeWithin?: number
 }
 
 export class HistoryStack {
@@ -32,7 +30,7 @@ export class HistoryStack {
 
   constructor(init: HistoryStackInit) {
     this.#size = init.limit
-    this.#batchWindow = init.batchWindow ?? 0
+    this.#batchWindow = init.autoMergeWithin ?? 0
 
     this.#stack = []
     this.#position = 0
@@ -70,6 +68,9 @@ export class HistoryStack {
     this.#latestTimestamp = 0
   }
 
+  /**
+   * Register a new history entry.
+   */
   public async push(applyFn: HistoryStackApplyFunction): Promise<void> {
     if (this.#batchWindow > 0) {
       this.#pendingBatch.push(applyFn)

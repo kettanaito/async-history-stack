@@ -14,7 +14,7 @@ it('executes the pushed entry immediately', async () => {
 })
 
 it('batches multiple pushes into a single push', async () => {
-  const history = new HistoryStack({ limit: 5, batchWindow: 250 })
+  const history = new HistoryStack({ limit: 5, autoMergeWithin: 250 })
   const writer = createTypewriter()
 
   await Promise.all([
