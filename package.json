@@ -1,8 +1,8 @@
 {
   "type": "module",
   "name": "async-history-stack",
-  "version": "0.0.0",
-  "description": "Arbitrary History Stack Library.",
+  "version": "1.0.0",
+  "description": "Arbitrary change history management in JavaScript.",
   "main": "build/index.mjs",
   "scripts": {
     "start": "tsdown -w",
