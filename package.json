@@ -1,0 +1,42 @@
+{
+  "type": "module",
+  "name": "ahsl",
+  "version": "1.0.0",
+  "description": "Arbitrary History Stack Library.",
+  "main": "build/index.mjs",
+  "scripts": {
+    "start": "tsdown -w",
+    "test": "vitest",
+    "lint": "publint",
+    "build": "tsdown",
+    "release": "release publish"
+  },
+  "exports": {
+    ".": "./build/index.mjs"
+  },
+  "files": [
+    "./build"
+  ],
+  "keywords": [
+    "undo",
+    "redo",
+    "revert",
+    "history",
+    "stack"
+  ],
+  "author": "Artem Zakharchenko <kettanaito@gmail.com>",
+  "repository": {
+    "url": "https://github.com/kettanaito/ahsl"
+  },
+  "dependencies": {
+    "outvariant": "^1.4.3"
+  },
+  "devDependencies": {
+    "@ossjs/release": "^0.10.1",
+    "@types/node": "^25.5.0",
+    "publint": "^0.3.18",
+    "tsdown": "^0.21.7",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}
