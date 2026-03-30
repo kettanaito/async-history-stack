@@ -1,1 +1,6 @@
-export { HistoryStack, type HistoryStackInit } from './history-stack'
+export {
+  HistoryStack,
+  type HistoryStackInit,
+  type HistoryStackApplyFunction,
+  type HistoryStackRevertFunction,
+} from './history-stack'
