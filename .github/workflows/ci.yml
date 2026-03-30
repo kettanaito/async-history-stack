@@ -10,9 +10,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CI_GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Git
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config --global user.name 'Artem Zakharchenko'
+          git config --global user.email 'kettanaito@gmail.com'
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -37,52 +49,8 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts
-          path: ./build
-
-  release:
-    needs: [build]
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.CI_GITHUB_TOKEN }}
-          fetch-depth: 0
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: 'pnpm'
-
-      - name: Set up Git
-        run: |
-          git config --global user.name 'Artem Zakharchenko'
-          git config --global user.email 'kettanaito@gmail.com'
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Restore build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
-          path: ./build
-
       - name: Release
+        if: github.ref == 'refs/heads/main'
         run: pnpm release
         env:
           GITHUB_TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}

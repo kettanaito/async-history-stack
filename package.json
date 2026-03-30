@@ -3,7 +3,7 @@
   "name": "async-history-stack",
   "version": "1.0.3",
   "description": "Arbitrary change history management in JavaScript.",
-  "main": "build/index.mjs",
+  "main": "./build/index.mjs",
   "scripts": {
     "start": "tsdown -w",
     "test": "vitest",
