@@ -11,6 +11,13 @@ export interface HistoryStackInit {
    * @default 0
    */
   autoMergeWithin?: number
+
+  /**
+   * Listen to changes in the history stack.
+   * This includes `.push()`, `.undo()`, and `.redo()` as long
+   * as the history entry wasn't skipped (returned `null`).
+   */
+  onChange?: () => void
 }
 
 export class HistoryStack {
@@ -27,10 +34,12 @@ export class HistoryStack {
   #pendingBatch: Array<HistoryStackApplyFunction>
   #batchTimer?: number
   #batchPromise: PromiseWithResolvers<void>
+  #onChange?: () => void
 
   constructor(init: HistoryStackInit) {
     this.#size = init.limit
     this.#batchWindow = init.autoMergeWithin ?? 0
+    this.#onChange = init.onChange
 
     this.#stack = []
     this.#position = 0
@@ -247,11 +256,18 @@ export class HistoryStack {
 
         const previousPromise = this.#pendingExecution.promise
         const chainedPromise = previousPromise.then(async (completed) => {
-          return completed
-            ? command === 'apply'
-              ? entry.apply()
-              : entry.revert()
-            : false
+          if (!completed) {
+            return false
+          }
+
+          const result =
+            command === 'apply' ? await entry.apply() : await entry.revert()
+
+          if (!entry.skipped) {
+            this.#onChange?.()
+          }
+
+          return result
         })
 
         this.#pendingExecution = { command, entry, promise: chainedPromise }
@@ -266,13 +282,15 @@ export class HistoryStack {
     const promise = command === 'apply' ? entry.apply() : entry.revert()
     this.#pendingExecution = { command, entry, promise }
 
-    // Handle a skipped entry when it's the only one in the stack.
     promise.then(() => {
       if (entry.skipped) {
         // Delete history entries that were skipped
         // (i.e. returned `null` instead of the revert function).
         this.#stack.splice(position, 1)
+        return
       }
+
+      this.#onChange?.()
     })
 
     return promise
