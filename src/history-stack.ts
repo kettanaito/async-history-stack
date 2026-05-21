@@ -11,6 +11,13 @@ export interface HistoryStackInit {
    * @default 0
    */
   autoMergeWithin?: number
+
+  /**
+   * Listen to changes in the history stack.
+   * This includes `.push()`, `.undo()`, and `.redo()` as long
+   * as the history entry wasn't skipped (returned `null`).
+   */
+  onChange?: () => void
 }
 
 export class HistoryStack {
@@ -27,10 +34,12 @@ export class HistoryStack {
   #pendingBatch: Array<HistoryStackApplyFunction>
   #batchTimer?: number
   #batchPromise: PromiseWithResolvers<void>
+  #onChange?: () => void
 
   constructor(init: HistoryStackInit) {
     this.#size = init.limit
     this.#batchWindow = init.autoMergeWithin ?? 0
+    this.#onChange = init.onChange
 
     this.#stack = []
     this.#position = 0
@@ -99,16 +108,12 @@ export class HistoryStack {
    * @returns True if the change has been undone, false otherwise.
    */
   public async undo(): Promise<boolean> {
-    console.log('HistoryStack.undo()', this.#stack, this.#position)
-
     if (this.#stack.length === 0) {
-      console.log('> stack is empty, nothing to undo!')
       return false
     }
 
     // Wait for the redo to decrease the position, otherwise ignore.
     if (this.#position === this.#stack.length) {
-      console.log('> position out of bounds, nothing to undo!')
       return false
     }
 
@@ -124,10 +129,7 @@ export class HistoryStack {
    * @returns `true` if the change has been redone, `false` otherwise.
    */
   public async redo(): Promise<boolean> {
-    console.log('HistoryStack.redo()', this.#stack)
-
     if (this.#stack.length === 0) {
-      console.log('> stack is empty, nothing to redo!')
       return false
     }
 
@@ -136,11 +138,9 @@ export class HistoryStack {
 
     // Wait for undo to increase the position, otherwise ignore.
     if (this.#position === -1) {
-      console.log('> position out of bounds, nothing to redo!')
       return false
     }
 
-    console.log('> redoing at', this.#position)
     return this.#execute('apply', this.#position)
   }
 
@@ -220,8 +220,6 @@ export class HistoryStack {
       this.#stack.splice(this.#size)
     }
 
-    console.log('HistoryStack.push()', entry, this.#stack)
-
     // Reset to the start of the stack and execute the new entry immediately.
     this.#position = 0
 
@@ -232,8 +230,6 @@ export class HistoryStack {
     command: 'apply' | 'revert',
     position: number,
   ): Promise<boolean> {
-    console.log('HistoryStack.#execute()', command, position)
-
     invariant(
       position >= 0 && position <= this.#stack.length - 1,
       'Failed to execute history stack entry at position "%d": position is out of range',
@@ -250,11 +246,6 @@ export class HistoryStack {
 
     if (this.#pendingExecution) {
       if (this.#pendingExecution.command === command) {
-        console.log(
-          '> chaining to pending entry',
-          this.#pendingExecution.entry.id,
-        )
-
         // Handle a skipped entry when another entry tries to chain after it.
         if (this.#pendingExecution.entry.skipped) {
           this.#stack.splice(
@@ -265,18 +256,18 @@ export class HistoryStack {
 
         const previousPromise = this.#pendingExecution.promise
         const chainedPromise = previousPromise.then(async (completed) => {
-          console.log(
-            '> previous entry completed, success?',
-            completed,
-            'now executing',
-            entry.id,
-          )
+          if (!completed) {
+            return false
+          }
 
-          return completed
-            ? command === 'apply'
-              ? entry.apply()
-              : entry.revert()
-            : false
+          const result =
+            command === 'apply' ? await entry.apply() : await entry.revert()
+
+          if (!entry.skipped) {
+            this.#onChange?.()
+          }
+
+          return result
         })
 
         this.#pendingExecution = { command, entry, promise: chainedPromise }
@@ -284,26 +275,22 @@ export class HistoryStack {
       }
 
       if (this.#pendingExecution.entry.readyState !== HistoryStackEntry.DONE) {
-        console.log(
-          '> aborting different command',
-          this.#pendingExecution.command,
-        )
-
         this.#pendingExecution.entry.abort()
       }
     }
 
-    console.log('> executing entry immediately', entry.id)
     const promise = command === 'apply' ? entry.apply() : entry.revert()
     this.#pendingExecution = { command, entry, promise }
 
-    // Handle a skipped entry when it's the only one in the stack.
     promise.then(() => {
       if (entry.skipped) {
         // Delete history entries that were skipped
         // (i.e. returned `null` instead of the revert function).
         this.#stack.splice(position, 1)
+        return
       }
+
+      this.#onChange?.()
     })
 
     return promise
@@ -426,14 +413,6 @@ class HistoryStackEntry {
   }
 
   public abort(): void {
-    console.log(
-      this.id,
-      'HistoryStackEntry.abort()',
-      this.readyState,
-      this.#controller,
-    )
-    console.log(new Error().stack)
-
     this.aborted = true
     this.#controller?.abort()
   }
@@ -452,11 +431,6 @@ class HistoryStackEntry {
 
       return revertFn({ signal: this.#controller.signal })
     }).finally(() => {
-      console.log(
-        this.id,
-        '> revert done! aborted?',
-        this.#controller?.signal.aborted,
-      )
       pendingResult.resolve(!this.#controller?.signal.aborted)
     })
 
@@ -464,14 +438,6 @@ class HistoryStackEntry {
   }
 
   #setReadyState(nextReadyState: HistoryStackReadyState): void {
-    console.log(
-      this.id,
-      'HistoryStackEntry.#setReadyState():',
-      this.readyState,
-      '->',
-      nextReadyState,
-    )
-
     if (this.readyState === nextReadyState) {
       return
     }
