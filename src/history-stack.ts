@@ -244,10 +244,7 @@ export class HistoryStack {
       if (this.#pendingExecution.command === command) {
         // Handle a skipped entry when another entry tries to chain after it.
         if (this.#pendingExecution.entry.skipped) {
-          this.#stack.splice(
-            this.#stack.indexOf(this.#pendingExecution.entry),
-            1,
-          )
+          this.#removeEntry(this.#pendingExecution.entry)
         }
 
         const chain = this.#pendingExecution.chain
@@ -301,9 +298,14 @@ export class HistoryStack {
     promise.then(
       () => {
         if (entry.skipped) {
-          // Delete history entries that were skipped
-          // (i.e. returned `null` instead of the revert function).
-          this.#stack.splice(position, 1)
+          /**
+           * Delete history entries that were skipped
+           * (i.e. returned `null` instead of the revert function).
+           * @note Remove the entry by identity: by the time a slow
+           * skipped entry settles, `position` may point at an entry
+           * pushed after it.
+           */
+          this.#removeEntry(entry)
           return
         }
 

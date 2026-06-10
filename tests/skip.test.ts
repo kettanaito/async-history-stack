@@ -1,3 +1,4 @@
+import { setTimeout } from 'node:timers/promises'
 import { HistoryStack } from '../src'
 import { createTypewriter } from './utils'
 
@@ -38,6 +39,35 @@ it('skips an entry in the list of other entries', async () => {
   expect(writer.word).toBe('13')
   await expect.soft(history.redo()).resolves.toBe(false)
   expect(writer.word).toBe('13')
+})
+
+it('skips a pending entry when another push chains onto it', async () => {
+  const history = new HistoryStack({ limit: 5 })
+  const writer = createTypewriter()
+
+  await history.push(writer.type('1'))
+
+  // A slow entry that ends up skipped.
+  const pendingSkip = history.push(async () => {
+    await setTimeout(10)
+    return null
+  })
+
+  // Pushed while the skipped entry is still pending.
+  const pendingPush = history.push(writer.type('3'))
+
+  await pendingSkip
+  await pendingPush
+
+  expect.soft(history.size).toBe(2)
+  expect(writer.word).toBe('13')
+
+  // Undoing the changes ignores the skipped entry.
+  await expect.soft(history.undo()).resolves.toBe(true)
+  expect(writer.word).toBe('1')
+  await expect.soft(history.undo()).resolves.toBe(true)
+  expect(writer.word).toBe('')
+  await expect.soft(history.undo()).resolves.toBe(false)
 })
 
 it('respects skippable entries when composing entries', async () => {
