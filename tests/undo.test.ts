@@ -67,6 +67,138 @@ it('aborts a pending change upon undo', async () => {
   expect.soft(value, 'Must not apply the aborted change').toBe(-1)
 })
 
+it('recovers after an undo whose revert function throws', async () => {
+  const history = new HistoryStack({ limit: 5 })
+  const writer = createTypewriter()
+
+  await history.push(writer.type('o'))
+  await history.push(() => {
+    return () => {
+      throw new Error('boom')
+    }
+  })
+
+  await expect(history.undo()).rejects.toThrow('boom')
+
+  await expect(history.undo()).resolves.toBe(true)
+  expect(writer.word).toBe('')
+})
+
+it('aborts a pending undo when redo is fired', async () => {
+  let value = 0
+  const history = new HistoryStack({ limit: 5 })
+  const undoAbortListener = vi.fn()
+
+  await history.push(() => {
+    value = 1
+    return () => {
+      value = 0
+    }
+  })
+  await history.push(() => {
+    value = 2
+    return async ({ signal }) => {
+      signal.addEventListener('abort', undoAbortListener)
+      await setTimeout(20)
+
+      if (!signal.aborted) {
+        value = 1
+      }
+    }
+  })
+
+  expect(value).toBe(2)
+
+  // Let's try to undo the latest change. Intentionally unawaited.
+  const pendingUndo = history.undo()
+  await setTimeout(5)
+
+  await expect.soft(history.redo()).resolves.toBe(true)
+
+  await expect
+    .soft(
+      pendingUndo,
+      'Must not mark undo as complete since its revert was aborted',
+    )
+    .resolves.toBe(false)
+  expect.soft(undoAbortListener).toHaveBeenCalledOnce()
+  expect.soft(value, 'Must keep the change applied').toBe(2)
+})
+
+it('cancels queued undos when redo is fired', async () => {
+  const log: Array<string> = []
+  const history = new HistoryStack({ limit: 5 })
+
+  const createEntry = (name: string) => () => {
+    log.push(`apply:${name}`)
+    return async ({ signal }: { signal: AbortSignal }) => {
+      await setTimeout(10)
+      log.push(`revert:${name}${signal.aborted ? ':aborted' : ''}`)
+    }
+  }
+
+  await history.push(createEntry('a'))
+  await history.push(createEntry('b'))
+  log.length = 0
+
+  // Revert "b" (slow), queue the revert of "a", then immediately redo.
+  const firstUndo = history.undo()
+  const queuedUndo = history.undo()
+  const redo = history.redo()
+
+  await expect
+    .soft(firstUndo, 'Must abort the undo in flight')
+    .resolves.toBe(false)
+  await expect
+    .soft(queuedUndo, 'Must cancel the queued undo')
+    .resolves.toBe(false)
+  await expect.soft(redo).resolves.toBe(true)
+
+  // Let any stray executions surface.
+  await setTimeout(30)
+
+  expect(
+    log,
+    'Must not execute the cancelled queued revert of "a"',
+  ).toEqual(['apply:a', 'revert:b:aborted'])
+})
+
+it('undoes the top-most applied entry after an aborted undo', async () => {
+  const log: Array<string> = []
+  const history = new HistoryStack({ limit: 5 })
+
+  const createEntry = (name: string) => () => {
+    log.push(`apply:${name}`)
+    return async ({ signal }: { signal: AbortSignal }) => {
+      await setTimeout(10)
+
+      if (!signal.aborted) {
+        log.push(`revert:${name}`)
+      }
+    }
+  }
+
+  await history.push(createEntry('a'))
+  await history.push(createEntry('b'))
+
+  // Abort the undo of "b" mid-flight, cancelling the queued undo of "a".
+  const firstUndo = history.undo()
+  const queuedUndo = history.undo()
+  const redo = history.redo()
+
+  await Promise.all([firstUndo, queuedUndo, redo])
+  // Let the aborted revert settle.
+  await setTimeout(15)
+  log.length = 0
+
+  /**
+   * Neither "b" nor "a" has actually been undone.
+   * The next undo must revert "b", the top-most applied entry.
+   */
+  await expect(history.undo()).resolves.toBe(true)
+  expect(log).toEqual(['revert:b'])
+})
+
 it('chains multiple synchronous undos', async () => {
   const history = new HistoryStack({ limit: 5 })
   const setter = vi.fn<(n: number) => void>()

@@ -24,11 +24,7 @@ export class HistoryStack {
   #stack: Array<HistoryStackEntry>
   #size: number
   #position: number
-  #pendingExecution?: {
-    command: 'apply' | 'revert'
-    entry: HistoryStackEntry
-    promise: Promise<boolean>
-  }
+  #pendingExecution?: PendingExecution
   #latestTimestamp: number
   #batchWindow: number
   #pendingBatch: Array<HistoryStackApplyFunction>
@@ -68,8 +64,8 @@ export class HistoryStack {
    * Optionally, abort any pending operations.
    */
   public clear(abortPending = false): void {
-    if (abortPending) {
-      this.#pendingExecution?.entry.abort()
+    if (abortPending && this.#pendingExecution) {
+      this.#abortExecutionChain(this.#pendingExecution.chain)
       this.#pendingExecution = undefined
     }
 
@@ -248,53 +244,166 @@ export class HistoryStack {
       if (this.#pendingExecution.command === command) {
         // Handle a skipped entry when another entry tries to chain after it.
         if (this.#pendingExecution.entry.skipped) {
-          this.#stack.splice(
-            this.#stack.indexOf(this.#pendingExecution.entry),
-            1,
-          )
+          this.#removeEntry(this.#pendingExecution.entry)
         }
 
+        const chain = this.#pendingExecution.chain
         const previousPromise = this.#pendingExecution.promise
-        const chainedPromise = previousPromise.then(async (completed) => {
-          if (!completed) {
-            return false
+        const chainedPromise = previousPromise
+          .then(
+            (completed) => completed,
+            /**
+             * @note A failed apply must not block subsequent, unrelated
+             * entries. A failed revert halts the chain since the state
+             * it left behind is unknown.
+             */
+            () => command === 'apply',
+          )
+          .then(async (completed) => {
+            // Never execute entries whose chain was aborted while
+            // they were waiting for their turn.
+            if (!completed || chain.aborted) {
+              return false
+            }
+
+            chain.activeEntry = entry
+
+            const result =
+              command === 'apply' ? await entry.apply() : await entry.revert()
+
+            if (!entry.skipped) {
+              this.#onChange?.()
+            }
+
+            return result
+          })
+
+        chainedPromise.catch(() => {
+          if (command === 'apply') {
+            this.#removeEntry(entry)
           }
-
-          const result =
-            command === 'apply' ? await entry.apply() : await entry.revert()
-
-          if (!entry.skipped) {
-            this.#onChange?.()
-          }
-
-          return result
         })
 
-        this.#pendingExecution = { command, entry, promise: chainedPromise }
+        this.#trackExecution({ command, entry, promise: chainedPromise, chain })
         return chainedPromise
       }
 
-      if (this.#pendingExecution.entry.readyState !== HistoryStackEntry.DONE) {
-        this.#pendingExecution.entry.abort()
-      }
+      this.#abortExecutionChain(this.#pendingExecution.chain)
     }
 
+    const chain: ExecutionChain = { aborted: false, activeEntry: entry }
     const promise = command === 'apply' ? entry.apply() : entry.revert()
-    this.#pendingExecution = { command, entry, promise }
+    this.#trackExecution({ command, entry, promise, chain })
 
-    promise.then(() => {
-      if (entry.skipped) {
-        // Delete history entries that were skipped
-        // (i.e. returned `null` instead of the revert function).
-        this.#stack.splice(position, 1)
-        return
-      }
+    promise.then(
+      () => {
+        if (entry.skipped) {
+          /**
+           * Delete history entries that were skipped
+           * (i.e. returned `null` instead of the revert function).
+           * @note Remove the entry by identity: by the time a slow
+           * skipped entry settles, `position` may point at an entry
+           * pushed after it.
+           */
+          this.#removeEntry(entry)
+          return
+        }
 
-      this.#onChange?.()
-    })
+        this.#onChange?.()
+      },
+      () => {
+        // A failed apply never happened: remove its entry from the history.
+        if (command === 'apply') {
+          this.#removeEntry(entry)
+        }
+      },
+    )
 
     return promise
   }
+
+  /**
+   * Track the given execution as pending, and stop tracking it once
+   * it settles. Subsequent executions only chain onto in-flight ones;
+   * a settled (especially rejected) execution must not affect them.
+   */
+  #trackExecution(execution: PendingExecution): void {
+    this.#pendingExecution = execution
+
+    const settleListener = () => {
+      if (this.#pendingExecution === execution) {
+        this.#pendingExecution = undefined
+      }
+
+      if (!this.#pendingExecution) {
+        this.#reconcilePosition()
+      }
+    }
+
+    execution.promise.then(settleListener, settleListener)
+  }
+
+  /**
+   * Derive the position from the entries that have actually been
+   * reverted. `undo()`/`redo()` move the position optimistically to
+   * target queued executions; an aborted or cancelled execution leaves
+   * the optimistic position counting changes that never happened.
+   */
+  #reconcilePosition(): void {
+    let revertedCount = 0
+
+    for (const entry of this.#stack) {
+      // Skipped entries are pending removal from the stack
+      // and must not count as reverted.
+      if (entry.skipped) {
+        continue
+      }
+
+      if (entry.applied) {
+        break
+      }
+
+      revertedCount++
+    }
+
+    this.#position = revertedCount
+  }
+
+  /**
+   * Abort the entire pending chain of executions: the execution
+   * currently in flight, and any executions queued after it.
+   */
+  #abortExecutionChain(chain: ExecutionChain): void {
+    chain.aborted = true
+
+    if (chain.activeEntry.readyState !== HistoryStackEntry.DONE) {
+      chain.activeEntry.abort()
+    }
+  }
+
+  #removeEntry(entry: HistoryStackEntry): void {
+    const entryIndex = this.#stack.indexOf(entry)
+
+    if (entryIndex !== -1) {
+      this.#stack.splice(entryIndex, 1)
+    }
+  }
+}
+
+interface PendingExecution {
+  command: 'apply' | 'revert'
+  entry: HistoryStackEntry
+  promise: Promise<boolean>
+  chain: ExecutionChain
+}
+
+/**
+ * State shared by all executions chained one after another.
+ * Aborting it cancels the queued executions that haven't started.
+ */
+interface ExecutionChain {
+  aborted: boolean
+  activeEntry: HistoryStackEntry
 }
 
 export type HistoryStackApplyFunction = (args: {
@@ -329,6 +438,13 @@ class HistoryStackEntry {
   public timestamp: number
   public skipped: boolean
 
+  /**
+   * Whether this entry's change is currently in effect.
+   * Only successful (non-aborted) applies and reverts update this,
+   * so it reflects what actually happened to the underlying state.
+   */
+  public applied: boolean
+
   constructor(applyFn: HistoryStackApplyFunction) {
     this.id = crypto.randomUUID()
     this.#controller = null
@@ -338,6 +454,7 @@ class HistoryStackEntry {
     this.readyState = HistoryStackEntry.IDLE
     this.aborted = false
     this.skipped = false
+    this.applied = false
     this.timestamp = 0
   }
 
@@ -357,8 +474,15 @@ class HistoryStackEntry {
     this.#controller = new AbortController()
     const controller = this.#controller
 
+    /**
+     * @note Do NOT revert the entry here. Rolling back a partially
+     * applied change is the apply function's job (it receives the abort
+     * signal): its own revert function doesn't exist until it settles,
+     * and any `#revertFn` present now is a stale one from a previous
+     * application of this entry. Running it would double-revert when
+     * the interrupting command reverts this entry explicitly.
+     */
     const abortListener = () => {
-      this.#revert()
       pendingResult.resolve(false)
       this.#setReadyState(HistoryStackEntry.DONE)
     }
@@ -376,7 +500,7 @@ class HistoryStackEntry {
       .finally(async () => {
         if (this.#revertFn == null) {
           controller.signal.removeEventListener('abort', abortListener)
-          pendingResult.resolve(!this.#controller?.signal.aborted)
+          pendingResult.resolve(!controller.signal.aborted)
           this.#setReadyState(HistoryStackEntry.DONE)
 
           this.skipped = true
@@ -385,12 +509,16 @@ class HistoryStackEntry {
 
         this.timestamp = Date.now()
 
+        if (!controller.signal.aborted) {
+          this.applied = true
+        }
+
         /**
          * @note Remove the listener so subsequent `apply()` doesn't revert
          * the previous apply, but remove the listener because it's irrelevant.
          */
         controller.signal.removeEventListener('abort', abortListener)
-        pendingResult.resolve(!this.#controller?.signal.aborted)
+        pendingResult.resolve(!controller.signal.aborted)
         this.#setReadyState(HistoryStackEntry.DONE)
       })
 
@@ -407,7 +535,6 @@ class HistoryStackEntry {
 
     return this.#revert().finally(async () => {
       this.timestamp = Date.now()
-      this.#controller = null
       this.#setReadyState(HistoryStackEntry.DONE)
     })
   }
@@ -426,12 +553,26 @@ class HistoryStackEntry {
 
     const pendingResult = Promise.withResolvers<boolean>()
 
-    await Promise.try(async () => {
-      this.#controller = new AbortController()
+    /**
+     * @note Keep a local reference to the controller. A concurrent
+     * `apply()`/`revert()` replaces `this.#controller`, and resolving
+     * from the instance field would report an aborted revert as completed.
+     */
+    const controller = new AbortController()
+    this.#controller = controller
 
-      return revertFn({ signal: this.#controller.signal })
+    await Promise.try(async () => {
+      return revertFn({ signal: controller.signal })
     }).finally(() => {
-      pendingResult.resolve(!this.#controller?.signal.aborted)
+      if (!controller.signal.aborted) {
+        this.applied = false
+      }
+
+      pendingResult.resolve(!controller.signal.aborted)
+
+      if (this.#controller === controller) {
+        this.#controller = null
+      }
     })
 
     return pendingResult.promise
