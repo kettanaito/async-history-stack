@@ -436,8 +436,15 @@ class HistoryStackEntry {
     this.#controller = new AbortController()
     const controller = this.#controller
 
+    /**
+     * @note Do NOT revert the entry here. Rolling back a partially
+     * applied change is the apply function's job (it receives the abort
+     * signal): its own revert function doesn't exist until it settles,
+     * and any `#revertFn` present now is a stale one from a previous
+     * application of this entry. Running it would double-revert when
+     * the interrupting command reverts this entry explicitly.
+     */
     const abortListener = () => {
-      this.#revert()
       pendingResult.resolve(false)
       this.#setReadyState(HistoryStackEntry.DONE)
     }

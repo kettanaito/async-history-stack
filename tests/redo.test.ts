@@ -61,12 +61,47 @@ it('aborts a pending redo redo when undo is fired', async () => {
   // Let's try to redo the last "e". Intentionally unawaited.
   const pendingRedo = history.redo()
 
+  /**
+   * @note The undo aborts the pending redo and reverts "e" exactly once,
+   * consuming itself in the process: the word returns to its pre-redo
+   * state, consistent with the history position (one entry undone).
+   */
   await expect.soft(history.undo()).resolves.toBe(true)
-  expect(writer.word).toBe('o')
+  expect(writer.word).toBe('on')
 
   await expect.soft(pendingRedo).resolves.toBe(false)
   expect.soft(redoAbortListener).toHaveBeenCalledOnce()
-  expect.soft(writer.word).toBe('o')
+  expect.soft(writer.word).toBe('on')
+})
+
+it('does not double-revert when undo aborts a pending redo', async () => {
+  const history = new HistoryStack({ limit: 5 })
+  const revertListener = vi.fn()
+
+  await history.push(async () => {
+    await setTimeout(10)
+    return revertListener
+  })
+
+  await expect(history.undo()).resolves.toBe(true)
+  expect(revertListener).toHaveBeenCalledOnce()
+  revertListener.mockClear()
+
+  // Redo the change (slow apply), then undo it mid-flight.
+  const pendingRedo = history.redo()
+  await setTimeout(5)
+  const pendingUndo = history.undo()
+
+  await expect.soft(pendingRedo).resolves.toBe(false)
+  await expect.soft(pendingUndo).resolves.toBe(true)
+
+  // Let the aborted apply settle.
+  await setTimeout(10)
+
+  expect(
+    revertListener,
+    'Must revert the change exactly once',
+  ).toHaveBeenCalledOnce()
 })
 
 it('chains multiple synchronous redos', async () => {
