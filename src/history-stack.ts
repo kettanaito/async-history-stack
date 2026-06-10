@@ -255,22 +255,38 @@ export class HistoryStack {
         }
 
         const previousPromise = this.#pendingExecution.promise
-        const chainedPromise = previousPromise.then(async (completed) => {
-          if (!completed) {
-            return false
+        const chainedPromise = previousPromise
+          .then(
+            (completed) => completed,
+            /**
+             * @note A failed apply must not block subsequent, unrelated
+             * entries. A failed revert halts the chain since the state
+             * it left behind is unknown.
+             */
+            () => command === 'apply',
+          )
+          .then(async (completed) => {
+            if (!completed) {
+              return false
+            }
+
+            const result =
+              command === 'apply' ? await entry.apply() : await entry.revert()
+
+            if (!entry.skipped) {
+              this.#onChange?.()
+            }
+
+            return result
+          })
+
+        chainedPromise.catch(() => {
+          if (command === 'apply') {
+            this.#removeEntry(entry)
           }
-
-          const result =
-            command === 'apply' ? await entry.apply() : await entry.revert()
-
-          if (!entry.skipped) {
-            this.#onChange?.()
-          }
-
-          return result
         })
 
-        this.#pendingExecution = { command, entry, promise: chainedPromise }
+        this.#trackExecution({ command, entry, promise: chainedPromise })
         return chainedPromise
       }
 
@@ -280,20 +296,57 @@ export class HistoryStack {
     }
 
     const promise = command === 'apply' ? entry.apply() : entry.revert()
-    this.#pendingExecution = { command, entry, promise }
+    this.#trackExecution({ command, entry, promise })
 
-    promise.then(() => {
-      if (entry.skipped) {
-        // Delete history entries that were skipped
-        // (i.e. returned `null` instead of the revert function).
-        this.#stack.splice(position, 1)
-        return
-      }
+    promise.then(
+      () => {
+        if (entry.skipped) {
+          // Delete history entries that were skipped
+          // (i.e. returned `null` instead of the revert function).
+          this.#stack.splice(position, 1)
+          return
+        }
 
-      this.#onChange?.()
-    })
+        this.#onChange?.()
+      },
+      () => {
+        // A failed apply never happened: remove its entry from the history.
+        if (command === 'apply') {
+          this.#removeEntry(entry)
+        }
+      },
+    )
 
     return promise
+  }
+
+  /**
+   * Track the given execution as pending, and stop tracking it once
+   * it settles. Subsequent executions only chain onto in-flight ones;
+   * a settled (especially rejected) execution must not affect them.
+   */
+  #trackExecution(execution: {
+    command: 'apply' | 'revert'
+    entry: HistoryStackEntry
+    promise: Promise<boolean>
+  }): void {
+    this.#pendingExecution = execution
+
+    const settleListener = () => {
+      if (this.#pendingExecution === execution) {
+        this.#pendingExecution = undefined
+      }
+    }
+
+    execution.promise.then(settleListener, settleListener)
+  }
+
+  #removeEntry(entry: HistoryStackEntry): void {
+    const entryIndex = this.#stack.indexOf(entry)
+
+    if (entryIndex !== -1) {
+      this.#stack.splice(entryIndex, 1)
+    }
   }
 }
 

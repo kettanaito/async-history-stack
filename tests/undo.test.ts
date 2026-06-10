@@ -67,6 +67,23 @@ it('aborts a pending change upon undo', async () => {
   expect.soft(value, 'Must not apply the aborted change').toBe(-1)
 })
 
+it('recovers after an undo whose revert function throws', async () => {
+  const history = new HistoryStack({ limit: 5 })
+  const writer = createTypewriter()
+
+  await history.push(writer.type('o'))
+  await history.push(() => {
+    return () => {
+      throw new Error('boom')
+    }
+  })
+
+  await expect(history.undo()).rejects.toThrow('boom')
+
+  await expect(history.undo()).resolves.toBe(true)
+  expect(writer.word).toBe('')
+})
+
 it('aborts a pending undo when redo is fired', async () => {
   let value = 0
   const history = new HistoryStack({ limit: 5 })
