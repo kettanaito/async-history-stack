@@ -24,11 +24,7 @@ export class HistoryStack {
   #stack: Array<HistoryStackEntry>
   #size: number
   #position: number
-  #pendingExecution?: {
-    command: 'apply' | 'revert'
-    entry: HistoryStackEntry
-    promise: Promise<boolean>
-  }
+  #pendingExecution?: PendingExecution
   #latestTimestamp: number
   #batchWindow: number
   #pendingBatch: Array<HistoryStackApplyFunction>
@@ -68,8 +64,8 @@ export class HistoryStack {
    * Optionally, abort any pending operations.
    */
   public clear(abortPending = false): void {
-    if (abortPending) {
-      this.#pendingExecution?.entry.abort()
+    if (abortPending && this.#pendingExecution) {
+      this.#abortExecutionChain(this.#pendingExecution.chain)
       this.#pendingExecution = undefined
     }
 
@@ -254,6 +250,7 @@ export class HistoryStack {
           )
         }
 
+        const chain = this.#pendingExecution.chain
         const previousPromise = this.#pendingExecution.promise
         const chainedPromise = previousPromise
           .then(
@@ -266,9 +263,13 @@ export class HistoryStack {
             () => command === 'apply',
           )
           .then(async (completed) => {
-            if (!completed) {
+            // Never execute entries whose chain was aborted while
+            // they were waiting for their turn.
+            if (!completed || chain.aborted) {
               return false
             }
+
+            chain.activeEntry = entry
 
             const result =
               command === 'apply' ? await entry.apply() : await entry.revert()
@@ -286,17 +287,16 @@ export class HistoryStack {
           }
         })
 
-        this.#trackExecution({ command, entry, promise: chainedPromise })
+        this.#trackExecution({ command, entry, promise: chainedPromise, chain })
         return chainedPromise
       }
 
-      if (this.#pendingExecution.entry.readyState !== HistoryStackEntry.DONE) {
-        this.#pendingExecution.entry.abort()
-      }
+      this.#abortExecutionChain(this.#pendingExecution.chain)
     }
 
+    const chain: ExecutionChain = { aborted: false, activeEntry: entry }
     const promise = command === 'apply' ? entry.apply() : entry.revert()
-    this.#trackExecution({ command, entry, promise })
+    this.#trackExecution({ command, entry, promise, chain })
 
     promise.then(
       () => {
@@ -325,11 +325,7 @@ export class HistoryStack {
    * it settles. Subsequent executions only chain onto in-flight ones;
    * a settled (especially rejected) execution must not affect them.
    */
-  #trackExecution(execution: {
-    command: 'apply' | 'revert'
-    entry: HistoryStackEntry
-    promise: Promise<boolean>
-  }): void {
+  #trackExecution(execution: PendingExecution): void {
     this.#pendingExecution = execution
 
     const settleListener = () => {
@@ -341,6 +337,18 @@ export class HistoryStack {
     execution.promise.then(settleListener, settleListener)
   }
 
+  /**
+   * Abort the entire pending chain of executions: the execution
+   * currently in flight, and any executions queued after it.
+   */
+  #abortExecutionChain(chain: ExecutionChain): void {
+    chain.aborted = true
+
+    if (chain.activeEntry.readyState !== HistoryStackEntry.DONE) {
+      chain.activeEntry.abort()
+    }
+  }
+
   #removeEntry(entry: HistoryStackEntry): void {
     const entryIndex = this.#stack.indexOf(entry)
 
@@ -348,6 +356,22 @@ export class HistoryStack {
       this.#stack.splice(entryIndex, 1)
     }
   }
+}
+
+interface PendingExecution {
+  command: 'apply' | 'revert'
+  entry: HistoryStackEntry
+  promise: Promise<boolean>
+  chain: ExecutionChain
+}
+
+/**
+ * State shared by all executions chained one after another.
+ * Aborting it cancels the queued executions that haven't started.
+ */
+interface ExecutionChain {
+  aborted: boolean
+  activeEntry: HistoryStackEntry
 }
 
 export type HistoryStackApplyFunction = (args: {

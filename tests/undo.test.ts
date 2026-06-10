@@ -125,6 +125,44 @@ it('aborts a pending undo when redo is fired', async () => {
   expect.soft(value, 'Must keep the change applied').toBe(2)
 })
 
+it('cancels queued undos when redo is fired', async () => {
+  const log: Array<string> = []
+  const history = new HistoryStack({ limit: 5 })
+
+  const createEntry = (name: string) => () => {
+    log.push(`apply:${name}`)
+    return async ({ signal }: { signal: AbortSignal }) => {
+      await setTimeout(10)
+      log.push(`revert:${name}${signal.aborted ? ':aborted' : ''}`)
+    }
+  }
+
+  await history.push(createEntry('a'))
+  await history.push(createEntry('b'))
+  log.length = 0
+
+  // Revert "b" (slow), queue the revert of "a", then immediately redo.
+  const firstUndo = history.undo()
+  const queuedUndo = history.undo()
+  const redo = history.redo()
+
+  await expect
+    .soft(firstUndo, 'Must abort the undo in flight')
+    .resolves.toBe(false)
+  await expect
+    .soft(queuedUndo, 'Must cancel the queued undo')
+    .resolves.toBe(false)
+  await expect.soft(redo).resolves.toBe(true)
+
+  // Let any stray executions surface.
+  await setTimeout(30)
+
+  expect(
+    log,
+    'Must not execute the cancelled queued revert of "a"',
+  ).toEqual(['apply:a', 'revert:b:aborted'])
+})
+
 it('chains multiple synchronous undos', async () => {
   const history = new HistoryStack({ limit: 5 })
   const setter = vi.fn<(n: number) => void>()
