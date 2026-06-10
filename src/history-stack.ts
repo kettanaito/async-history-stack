@@ -334,9 +334,39 @@ export class HistoryStack {
       if (this.#pendingExecution === execution) {
         this.#pendingExecution = undefined
       }
+
+      if (!this.#pendingExecution) {
+        this.#reconcilePosition()
+      }
     }
 
     execution.promise.then(settleListener, settleListener)
+  }
+
+  /**
+   * Derive the position from the entries that have actually been
+   * reverted. `undo()`/`redo()` move the position optimistically to
+   * target queued executions; an aborted or cancelled execution leaves
+   * the optimistic position counting changes that never happened.
+   */
+  #reconcilePosition(): void {
+    let revertedCount = 0
+
+    for (const entry of this.#stack) {
+      // Skipped entries are pending removal from the stack
+      // and must not count as reverted.
+      if (entry.skipped) {
+        continue
+      }
+
+      if (entry.applied) {
+        break
+      }
+
+      revertedCount++
+    }
+
+    this.#position = revertedCount
   }
 
   /**
@@ -408,6 +438,13 @@ class HistoryStackEntry {
   public timestamp: number
   public skipped: boolean
 
+  /**
+   * Whether this entry's change is currently in effect.
+   * Only successful (non-aborted) applies and reverts update this,
+   * so it reflects what actually happened to the underlying state.
+   */
+  public applied: boolean
+
   constructor(applyFn: HistoryStackApplyFunction) {
     this.id = crypto.randomUUID()
     this.#controller = null
@@ -417,6 +454,7 @@ class HistoryStackEntry {
     this.readyState = HistoryStackEntry.IDLE
     this.aborted = false
     this.skipped = false
+    this.applied = false
     this.timestamp = 0
   }
 
@@ -471,6 +509,10 @@ class HistoryStackEntry {
 
         this.timestamp = Date.now()
 
+        if (!controller.signal.aborted) {
+          this.applied = true
+        }
+
         /**
          * @note Remove the listener so subsequent `apply()` doesn't revert
          * the previous apply, but remove the listener because it's irrelevant.
@@ -522,6 +564,10 @@ class HistoryStackEntry {
     await Promise.try(async () => {
       return revertFn({ signal: controller.signal })
     }).finally(() => {
+      if (!controller.signal.aborted) {
+        this.applied = false
+      }
+
       pendingResult.resolve(!controller.signal.aborted)
 
       if (this.#controller === controller) {

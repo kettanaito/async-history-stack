@@ -163,6 +163,42 @@ it('cancels queued undos when redo is fired', async () => {
   ).toEqual(['apply:a', 'revert:b:aborted'])
 })
 
+it('undoes the top-most applied entry after an aborted undo', async () => {
+  const log: Array<string> = []
+  const history = new HistoryStack({ limit: 5 })
+
+  const createEntry = (name: string) => () => {
+    log.push(`apply:${name}`)
+    return async ({ signal }: { signal: AbortSignal }) => {
+      await setTimeout(10)
+
+      if (!signal.aborted) {
+        log.push(`revert:${name}`)
+      }
+    }
+  }
+
+  await history.push(createEntry('a'))
+  await history.push(createEntry('b'))
+
+  // Abort the undo of "b" mid-flight, cancelling the queued undo of "a".
+  const firstUndo = history.undo()
+  const queuedUndo = history.undo()
+  const redo = history.redo()
+
+  await Promise.all([firstUndo, queuedUndo, redo])
+  // Let the aborted revert settle.
+  await setTimeout(15)
+  log.length = 0
+
+  /**
+   * Neither "b" nor "a" has actually been undone.
+   * The next undo must revert "b", the top-most applied entry.
+   */
+  await expect(history.undo()).resolves.toBe(true)
+  expect(log).toEqual(['revert:b'])
+})
+
 it('chains multiple synchronous undos', async () => {
   const history = new HistoryStack({ limit: 5 })
   const setter = vi.fn<(n: number) => void>()
