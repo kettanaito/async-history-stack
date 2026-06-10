@@ -376,7 +376,7 @@ class HistoryStackEntry {
       .finally(async () => {
         if (this.#revertFn == null) {
           controller.signal.removeEventListener('abort', abortListener)
-          pendingResult.resolve(!this.#controller?.signal.aborted)
+          pendingResult.resolve(!controller.signal.aborted)
           this.#setReadyState(HistoryStackEntry.DONE)
 
           this.skipped = true
@@ -390,7 +390,7 @@ class HistoryStackEntry {
          * the previous apply, but remove the listener because it's irrelevant.
          */
         controller.signal.removeEventListener('abort', abortListener)
-        pendingResult.resolve(!this.#controller?.signal.aborted)
+        pendingResult.resolve(!controller.signal.aborted)
         this.#setReadyState(HistoryStackEntry.DONE)
       })
 
@@ -407,7 +407,6 @@ class HistoryStackEntry {
 
     return this.#revert().finally(async () => {
       this.timestamp = Date.now()
-      this.#controller = null
       this.#setReadyState(HistoryStackEntry.DONE)
     })
   }
@@ -426,12 +425,22 @@ class HistoryStackEntry {
 
     const pendingResult = Promise.withResolvers<boolean>()
 
-    await Promise.try(async () => {
-      this.#controller = new AbortController()
+    /**
+     * @note Keep a local reference to the controller. A concurrent
+     * `apply()`/`revert()` replaces `this.#controller`, and resolving
+     * from the instance field would report an aborted revert as completed.
+     */
+    const controller = new AbortController()
+    this.#controller = controller
 
-      return revertFn({ signal: this.#controller.signal })
+    await Promise.try(async () => {
+      return revertFn({ signal: controller.signal })
     }).finally(() => {
-      pendingResult.resolve(!this.#controller?.signal.aborted)
+      pendingResult.resolve(!controller.signal.aborted)
+
+      if (this.#controller === controller) {
+        this.#controller = null
+      }
     })
 
     return pendingResult.promise

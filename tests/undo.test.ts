@@ -67,6 +67,47 @@ it('aborts a pending change upon undo', async () => {
   expect.soft(value, 'Must not apply the aborted change').toBe(-1)
 })
 
+it('aborts a pending undo when redo is fired', async () => {
+  let value = 0
+  const history = new HistoryStack({ limit: 5 })
+  const undoAbortListener = vi.fn()
+
+  await history.push(() => {
+    value = 1
+    return () => {
+      value = 0
+    }
+  })
+  await history.push(() => {
+    value = 2
+    return async ({ signal }) => {
+      signal.addEventListener('abort', undoAbortListener)
+      await setTimeout(20)
+
+      if (!signal.aborted) {
+        value = 1
+      }
+    }
+  })
+
+  expect(value).toBe(2)
+
+  // Let's try to undo the latest change. Intentionally unawaited.
+  const pendingUndo = history.undo()
+  await setTimeout(5)
+
+  await expect.soft(history.redo()).resolves.toBe(true)
+
+  await expect
+    .soft(
+      pendingUndo,
+      'Must not mark undo as complete since its revert was aborted',
+    )
+    .resolves.toBe(false)
+  expect.soft(undoAbortListener).toHaveBeenCalledOnce()
+  expect.soft(value, 'Must keep the change applied').toBe(2)
+})
+
 it('chains multiple synchronous undos', async () => {
   const history = new HistoryStack({ limit: 5 })
   const setter = vi.fn<(n: number) => void>()
