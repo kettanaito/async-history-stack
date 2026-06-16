@@ -141,6 +141,36 @@ export class HistoryStack {
   }
 
   /**
+   * Whether there is at least one change that can be undone.
+   * @note Derived from the actual entry state, not the optimistic
+   * position, so a pending or aborted undo/redo is reflected correctly.
+   */
+  public canUndo(): boolean {
+    return this.#stack.some((entry) => {
+      // `applied` only becomes `true` after a successful apply and only
+      // `false` after a successful revert, so an applied entry is always
+      // something that can be reverted. Skipped entries are pending
+      // removal and never count.
+      return !entry.skipped && entry.applied
+    })
+  }
+
+  /**
+   * Whether there is at least one change that can be redone.
+   * @note Derived from the actual entry state, not the optimistic
+   * position, so a pending or aborted undo/redo is reflected correctly.
+   */
+  public canRedo(): boolean {
+    return this.#stack.some((entry) => {
+      return (
+        !entry.skipped &&
+        !entry.applied &&
+        entry.readyState === HistoryStackEntry.DONE
+      )
+    })
+  }
+
+  /**
    * Merge multiple history entries into one so they can be undone/redone
    * as a single history entry.
    * @note Merged functions are executed *sequentially*.
