@@ -30,6 +30,8 @@ export class HistoryStack {
   #pendingBatch: Array<HistoryStackApplyFunction>
   #batchTimer?: number
   #batchPromise: PromiseWithResolvers<void>
+  #batchExecution?: Promise<void>
+  #batchId: number
   #onChange?: () => void
 
   constructor(init: HistoryStackInit) {
@@ -43,6 +45,7 @@ export class HistoryStack {
 
     this.#pendingBatch = []
     this.#batchPromise = Promise.withResolvers()
+    this.#batchId = 0
   }
 
   /**
@@ -69,6 +72,10 @@ export class HistoryStack {
       this.#pendingExecution = undefined
     }
 
+    if (abortPending) {
+      this.#cancelBatch()
+    }
+
     this.#stack.length = 0
     this.#latestTimestamp = 0
   }
@@ -81,19 +88,27 @@ export class HistoryStack {
       this.#pendingBatch.push(applyFn)
 
       if (!this.#batchTimer) {
+        const batchId = this.#batchId
+
         this.#batchTimer = setTimeout(
           () => this.#batchPromise.resolve(),
           this.#batchWindow,
         )
+
+        this.#batchExecution = this.#batchPromise.promise.then(async () => {
+          if (batchId !== this.#batchId) {
+            return
+          }
+
+          const batchedApplyChange = await this.#mergeBatch()
+
+          if (batchedApplyChange) {
+            await this.#pushAndExecute(batchedApplyChange)
+          }
+        })
       }
 
-      return this.#batchPromise.promise.then(async () => {
-        const batchedApplyChange = await this.#mergeBatch()
-
-        if (batchedApplyChange) {
-          await this.#pushAndExecute(batchedApplyChange)
-        }
-      })
+      return this.#batchExecution
     }
 
     await this.#pushAndExecute(applyFn)
@@ -217,12 +232,28 @@ export class HistoryStack {
     clearTimeout(this.#batchTimer)
     this.#batchTimer = undefined
     this.#batchPromise = Promise.withResolvers()
+    this.#batchExecution = undefined
+    this.#batchId++
 
     if (batch.length === 0) {
       return
     }
 
     return this.merge(...batch)
+  }
+
+  #cancelBatch(): void {
+    if (!this.#batchTimer) {
+      return
+    }
+
+    this.#pendingBatch = []
+    clearTimeout(this.#batchTimer)
+    this.#batchTimer = undefined
+    this.#batchExecution = undefined
+    this.#batchId++
+    this.#batchPromise.resolve()
+    this.#batchPromise = Promise.withResolvers()
   }
 
   async #pushAndExecute(applyFn: HistoryStackApplyFunction): Promise<void> {
