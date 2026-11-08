@@ -208,6 +208,11 @@ export class HistoryStack {
         }
       }
 
+      // Skip the merged entry if none of its children produced a change.
+      if (reverts.length === 0) {
+        return null
+      }
+
       return async ({ signal }) => {
         /**
          * @note Revert the changes in the same, NOT reversed order.
