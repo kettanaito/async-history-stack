@@ -61,3 +61,26 @@ it('does not produce an entry if all child entries were skipped', async () => {
   expect(writer.word).toBe('')
   expect(history.size).toBe(0)
 })
+
+it('produces an entry if at least one child entry was not skipped', async () => {
+  const history = new HistoryStack({ limit: 5 })
+  const writer = createTypewriter()
+
+  await history.push(
+    history.merge(
+      () => null,
+      writer.type('1'),
+      () => null,
+    ),
+  )
+  expect(writer.word).toBe('1')
+  expect(history.size).toBe(1)
+
+  await expect.soft(history.undo()).resolves.toBe(true)
+  expect(writer.word).toBe('')
+  await expect.soft(history.undo()).resolves.toBe(false)
+
+  await expect.soft(history.redo()).resolves.toBe(true)
+  expect(writer.word).toBe('1')
+  await expect.soft(history.redo()).resolves.toBe(false)
+})
